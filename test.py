@@ -1,194 +1,183 @@
-import requests
+import unittest
+import responses
+from dotenv import load_dotenv
+import os
 
-class Handler:
-  headers = {
-      "Authorization": f""
-  }
+from .main import Handler
 
-  def _retrieve_until_meets_condition_(self, url: str, condition, **kwargs) -> object | None:
-      offset = 0
-      offset_step = 1
-      limit = 1
-      remaining = -1
+load_dotenv()
 
-      params = {
-          'limit': limit,
-          'offset': offset
-      }
+class C2DMock:
+    token: str = None
 
-      with requests.Session() as ses:
-          ses.headers = self.headers.copy()
-          while True:
-              params['limit'] = limit
-              params['offset'] = offset
+    def __init__(self, token: str):
+        self.token = token
 
-              response = ses.get(url, params=params)
-              response.raise_for_status()
+class TestCase(unittest.TestCase):
+    def setUp(self):
+        self.handler = Handler()
 
-              resp_json = response.json()
+        self.c2d_mock = C2DMock(os.getenv('API_TOKEN', ''))
 
-              result = condition(resp_json, **kwargs)
-              if result:
-                  return result
+        self.responses = responses.RequestsMock()
+        self.responses.start()
 
-              if remaining == -1:
-                  remaining = resp_json['meta']['total']
+        responses.add(**{
+            'method': responses.GET,
+            'url': 'https://api.chat2desk.com/v1/clients/?limit=200&offset=0',
+            'body': """{"data": [
+                        {"username": "piligrimdev", "id": 726888910 },
+                        {"username": "elsbv", "id": 740209971 } ],
+                    "meta": {"total": 2,"limit": 200, "offset": 0}
+                    }""",
+            'status': 200,
+            'content_type': 'application/json'
+        })
 
-              remaining -= limit
-              offset += offset_step
+        responses.add(**{
+            'method': responses.GET,
+            'url': 'https://api.chat2desk.com/v1/tags/',
+            'body': """{"data": [
+                        {"id": 379158, "label": "VIP" },
+                        {"id": 379159,"label": "Лоялен" },
+                        {"id": 379160, "label": "Недоволен"} ],
+                        "meta": {"total": 3,"limit": 20,"offset": 0 }
+                        }""",
+            'status': 200,
+            'content_type': 'application/json'
+        })
 
-              if remaining <= 0:
-                  return None
+        responses.add(**{
+            'method': responses.POST,
+            'url': "https://api.chat2desk.com/v1/messages",
+            'body': "{}",
+            'status': 200,
+            'content_type': 'application/json'
+        })
 
-  def available_operator_condition(self, resp_json: dict) -> int | None:
-      for operator in resp_json['data']:
-          if operator['opened_dialogs'] < 5:
-              return operator['id']
-      return None
+        responses.add(**{
+            'method': responses.POST,
+            'url': "https://api.chat2desk.com/v1/tags/assign_to",
+            'body': "{}",
+            'status': 200,
+            'content_type': 'application/json'
+        })
 
-  def user_id_by_name_condition(self, resp_json: dict, username: str) -> int | None:
-      for client in resp_json['data']:
-          if client['username'] == username:
-              return client['id']
-      return None
+        responses.add(**{
+            'method': responses.PUT,
+            'url': 'https://api.chat2desk.com/v1/dialogs/522372359',
+            'body': "{}",
+            'status': 200,
+            'content_type': 'application/json'
+        })
 
-  def tag_id_by_label_condition(self, resp_json: dict, label: str) -> int | None:
-      for tag in resp_json['data']:
-          if tag['label'] == label:
-              return tag['id']
-      return None
+        self.addCleanup(self.responses.stop)
+        self.addCleanup(self.responses.reset)
 
-  def process_new_request(self, tag_label: str, client_id: int, dialog_id: int) -> None:
-      client_data = self.get_client_by_id(client_id)
-      tag_id = self.get_tag_id_by_label(tag_label)
+    @responses.activate
+    def test_external_request_has_user(self):
+        result = self.handler.manually_handler({
+            'event': 'event_name',
+            'name': 'piligrimdev'
+        }, self.c2d_mock)
 
-      if client_data and tag_id and self.client_has_tag(client_data['data'], tag_id):
-          operator_id = self.get_available_operator()
-          if operator_id:
-              self.send_message_to_user(client_id, "Оператор найден", False, 'system')
-              self.set_operator_to_dialog(dialog_id, operator_id, 'OPEN')
-          else:
-              self.send_message_to_user(client_id, "Оператор не найден", False, 'comment')
+        self.assertEqual(result,"Assigned VIP tag for client with name piligrimdev")
 
-  def process_external_post_request(self, username: str, tag_label: str) -> None:
-      client_id = self.get_user_id_by_username(username)
+    @responses.activate
+    def test_external_request_no_user(self):
+        result = self.handler.manually_handler({
+            'event': 'event_name',
+            'name': 'piligrimde1231v'
+        }, self.c2d_mock)
 
-      if client_id:
-          self.send_message_to_user(client_id, f"Привет,{username}. Хорошего дня!", False, 'to_client')
+        self.assertEqual("Failed assign VIP tag for client with name piligrimde1231v", result)
 
-          tag_id = self.get_tag_id_by_label(tag_label)
-          if tag_id:
-            self.assign_tag_to_client(client_id, tag_id)
+    @responses.activate
+    def test_new_request_has_available_operator(self):
+        responses.add(**{
+            'method': responses.GET,
+            'url': 'https://api.chat2desk.com/v1/clients/726888910',
+            'body': """{ "data": { "id": 726888910, "tags": [ { "id": 379158 } ] } }""",
+            'status': 200,
+            'content_type': 'application/json'
+        })
 
-  def client_has_tag(self, client_data: dict, tag_id: int) -> bool:
-      for tag in client_data['tags']:
-          if tag['id'] == tag_id:
-              return True
-      return False
+        responses.add(**{
+            'method': responses.GET,
+            'url': 'https://api.chat2desk.com/v1/operators/?limit=200&offset=0',
+            'body': """{ "data": [ {"id": 312866, "opened_dialogs": 1 } ],
+                                "meta": { "total": 1, "limit": 200, "offset": 0 }
+                                }""",
+            'status': 200,
+            'content_type': 'application/json'
+        })
 
-  def get_client_by_id(self, client_id: int) -> dict | None:
+        result = self.handler.new_request_handler({
+                "id": 1112,
+                "client_id": 726888910,
+                "channel_id": 111,
+                "dialog_id": 522372359,
+                "type": "common"
+            }, self.c2d_mock)
 
-      response = requests.get(f'https://api.chat2desk.com/v1/clients/{client_id}', headers=self.headers)
+        self.assertEqual("Attached operator with 312866 for client with id 726888910", result)
 
-      if response.ok:
-          return response.json()
+    @responses.activate
+    def test_new_request_no_available_operator(self):
+        responses.add(**{
+            'method': responses.GET,
+            'url': 'https://api.chat2desk.com/v1/clients/726888910',
+            'body': """{ "data": { "id": 726888910, "tags": [ { "id": 379158 } ] } }""",
+            'status': 200,
+            'content_type': 'application/json'
+        })
 
-      return None
+        responses.add(**{
+            'method': responses.GET,
+            'url': 'https://api.chat2desk.com/v1/operators/?limit=200&offset=0',
+            'body': """{ "data": [ {"id": 312866, "opened_dialogs": 100 } ],
+                                "meta": { "total": 1, "limit": 200, "offset": 0 }
+                                }""",
+            'status': 200,
+            'content_type': 'application/json'
+        })
 
-  def set_operator_to_dialog(self, dialog_id: int, operator_id: int, state: str = None, initiator_id: int = None) -> int:
+        result = self.handler.new_request_handler({
+            "id": 1112,
+            "client_id": 726888910,
+            "channel_id": 111,
+            "dialog_id": 522372359,
+            "type": "common"
+        }, self.c2d_mock)
 
-      if not state:
-          state = 'closed'
-      if not initiator_id:
-          initiator_id = operator_id
+        self.assertEqual(f"Failed to attach operator for client with id 726888910", result)
 
-      body = {
-          "operator_id": operator_id,
-          "state": state.lower(),
-          "initiator_id": initiator_id
-      }
+    @responses.activate
+    def test_new_request_no_vip_tag(self):
+        responses.add(**{
+            'method': responses.GET,
+            'url': 'https://api.chat2desk.com/v1/clients/726888910',
+            'body': """{ "data": { "id": 726888910, "tags": [  ] } }""",
+            'status': 200,
+            'content_type': 'application/json'
+        })
 
-      response = requests.put(f' https://api.chat2desk.com/v1/dialogs/{dialog_id}', headers=self.headers, data=body)
-      response.raise_for_status()
+        responses.add(**{
+            'method': responses.GET,
+            'url': 'https://api.chat2desk.com/v1/operators/?limit=200&offset=0',
+            'body': """{ "data": [ {"id": 312866, "opened_dialogs": 1 } ],
+                                    "meta": { "total": 1, "limit": 200, "offset": 0 }
+                                    }""",
+            'status': 200,
+            'content_type': 'application/json'
+        })
 
-  def get_client_id_by_dialog_id(self, dialog_id: int) -> int | None:
+        result = self.handler.new_request_handler({
+            "id": 1112,
+            "client_id": 726888910,
+            "channel_id": 111,
+            "dialog_id": 522372359,
+            "type": "common"
+        }, self.c2d_mock)
 
-      response = requests.get(f' https://api.chat2desk.com/v1/dialogs/{dialog_id}', headers=self.headers)
-
-      if response.ok:
-          json = response.json()
-          last_msg = json['data']['last_message']
-          client_id = last_msg['client_id']
-          return client_id
-
-      return None
-
-  def get_request_by_id(self, request_id: int) -> dict | None:
-
-      response = requests.get(f'https://api.chat2desk.com/v1/requests/{request_id}', headers=self.headers)
-
-      if response.ok:
-          return response.json()
-
-      return None
-
-  def get_available_operator(self) -> int | None:
-      return self._retrieve_until_meets_condition_('https://api.chat2desk.com/v1/operators/',
-                                                   self.available_operator_condition)
-
-  def assign_tag_to_client(self, client_id: int, tag_id: int) -> None:
-      body = {
-          'assignee_id': client_id,
-          'tag_ids': [tag_id],
-          'assignee_type': 'client'
-      }
-
-      response = requests.post('https://api.chat2desk.com/v1/tags/assign_to', headers=self.headers, data=body)
-      response.raise_for_status()
-
-  def get_user_id_by_username(self, username: str) -> int | None:
-      return self._retrieve_until_meets_condition_('https://api.chat2desk.com/v1/clients/',
-                                                   self.user_id_by_name_condition,
-                                                   username=username)
-
-  def get_tag_id_by_label(self, label: str) -> int | None:
-      return self._retrieve_until_meets_condition_('https://api.chat2desk.com/v1/tags/',
-                                                   self.tag_id_by_label_condition,
-                                                   label=label)
-
-  def send_message_to_user(self, user_id: int, text: str, open_dialog: bool, type: str) -> int:
-
-      params = {
-          'client_id': user_id,
-          'text': text,
-          'open_dialog': open_dialog,
-          'type': type
-      }
-
-      response = requests.post('https://api.chat2desk.com/v1/messages', headers=self.headers,
-                               params=params)
-      response.raise_for_status()
-
-  def manually_handler(self, input_data, c2d):
-    self.headers['Authorization'] = c2d.token
-
-    try:
-        self.process_external_post_request(input_data['name'], 'VIP')
-    except requests.exceptions.Timeout:
-        print('Request timed out')
-    except requests.exceptions.RequestException as e:
-        print('Exception raised by request method')
-
-    return input_data['name']
-
-  def new_request_handler(self, input_data, c2d):
-    self.headers['Authorization'] = c2d.token
-
-    try:
-        self.process_new_request('VIP', input_data['client_id'], input_data['dialog_id'])
-    except requests.exceptions.Timeout:
-        print('Request timed out')
-    except requests.exceptions.RequestException as e:
-        print(f'Exception raised by request method: {e}')
-
-    return input_data
+        self.assertEqual(f"Failed to attach operator for client with id 726888910", result)
