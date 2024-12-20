@@ -23,8 +23,8 @@ class TestCase(unittest.TestCase):
             'method': responses.GET,
             'url': 'https://api.chat2desk.com/v1/clients/?limit=200&offset=0',
             'body': """{"data": [
-                        {"username": "piligrimdev", "id": 726888910 },
-                        {"username": "elsbv", "id": 740209971 } ],
+                        {"name": "Павел", "id": 726888910 },
+                        {"name": "elsbv", "id": 740209971 } ],
                     "meta": {"total": 2,"limit": 200, "offset": 0}
                     }""",
             'status': 200,
@@ -75,10 +75,10 @@ class TestCase(unittest.TestCase):
     def test_external_request_has_user(self):
         result = self.handler.manually_handler({
             'event': 'event_name',
-            'name': 'piligrimdev'
+            'name': 'Павел'
         }, self.c2d_mock)
 
-        self.assertEqual(result,"Assigned VIP tag for client with name piligrimdev")
+        self.assertEqual(result,"Assigned VIP tag for client with name Павел")
 
     @responses.activate
     def test_external_request_no_user(self):
