@@ -65,13 +65,13 @@ class Handler:
         """
         Метод, передаваемый в Handler._retrieve_until_meets_condition_().
 
-        Среди полученных клиентов ищет клиента с подходящим username.
+        Среди полученных клиентов ищет клиента с подходящим именем.
         :param resp_json: json с клиентами.
-        :param username: username, по которому будет идти поиск
+        :param username: имя, по которому будет идти поиск
         :return: id подходящего клиента или None, если такого нет.
         """
         for client in resp_json["data"]:
-            if client["username"] == username:
+            if client["name"] == username:
                 return client["id"]
         return None
 
