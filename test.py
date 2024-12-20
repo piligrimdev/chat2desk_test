@@ -1,11 +1,8 @@
 import unittest
 import responses
-from dotenv import load_dotenv
-import os
 
-from .main import Handler
+from main import Handler
 
-load_dotenv()
 
 class C2DMock:
     token: str = None
@@ -17,7 +14,7 @@ class TestCase(unittest.TestCase):
     def setUp(self):
         self.handler = Handler()
 
-        self.c2d_mock = C2DMock(os.getenv('API_TOKEN', ''))
+        self.c2d_mock = C2DMock('')
 
         self.responses = responses.RequestsMock()
         self.responses.start()
